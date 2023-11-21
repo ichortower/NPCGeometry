@@ -24,12 +24,6 @@ namespace ichortower.NPCGeometry
             ModEntry.HELPER = helper;
             var harmony = new Harmony(this.ModManifest.UniqueID);
             harmony.Patch(
-                original: typeof(NPC).GetMethod("reloadSprite",
-                    BindingFlags.Instance | BindingFlags.Public),
-                postfix: new HarmonyMethod(typeof(ModEntry),
-                    "NPC_reloadSprite__Postfix")
-            );
-            harmony.Patch(
                 original: typeof(Character).GetMethod("DrawShadow",
                     BindingFlags.Instance | BindingFlags.Public),
                 transpiler: new HarmonyMethod(typeof(ModEntry),
@@ -71,8 +65,9 @@ namespace ichortower.NPCGeometry
         }
 
         /*
-         * Likewise, having this helper function in C# offloads a bunch of
-         * locals and calls and tedious stuff to the compiler.
+         * Likewise, this helper function saves me a bunch of tedious CIL
+         * work. But it also handles saving the adjusted values into the
+         * target structs.
          */
         public static bool TryParseBreatheRect(string val,
                 ref Microsoft.Xna.Framework.Rectangle chestBox,
@@ -98,10 +93,6 @@ namespace ichortower.NPCGeometry
             return false;
         }
 
-        public static void StaticLog(string str)
-        {
-            MONITOR.Log(str, LogLevel.Info);
-        }
 
         /*
          * For DrawShadow, we want to add an extra multiplying factor to the
@@ -142,11 +133,13 @@ namespace ichortower.NPCGeometry
             };
             codes.InsertRange(0, fieldChecker);
 
-            /* to find the injection point for the extra multiply, we are
+            /*
+             * to find the injection point for the extra multiply, we are
              * looking for the load of constant 40f, then finding the first
              * callvirt after that.
-             * FIXME probably better to find the callvirt directly by checking
-             * the MethodInfo operand */
+             * it's probably better to find the callvirt directly by checking
+             * the MethodInfo operand, but this is working so far.
+             */
             int target = -1;
             bool forty = false;
             for (int i = 0; i < codes.Count - 1; ++i) {
@@ -170,6 +163,10 @@ namespace ichortower.NPCGeometry
         /*
          * The NPC.draw transpiler adds two patches for two different geometry
          * fields: EmoteHeight and BreatheRect.
+         * EmoteHeight replaces the emote bubble height calculation with a
+         * custom offset.
+         * BreatheRect picks a custom rectangle on the sprite to animate to
+         * show breathing, instead of calculating it with heuristics.
          */
         public static IEnumerable<CodeInstruction> NPC_draw__Transpiler(
                 IEnumerable<CodeInstruction> instructions,
@@ -185,7 +182,7 @@ namespace ichortower.NPCGeometry
             Label foundBreatheRectField = generator.DefineLabel();
             var codes = new List<CodeInstruction>(instructions);
 
-            /* Inject the patch for custom breathe rect.
+            /* The breathe rect code.
              * Most of the work is farmed out to the two helper functions. */
             var breatheInjection = new List<CodeInstruction>(){
                 new(OpCodes.Ldarg_0),
@@ -224,7 +221,7 @@ namespace ichortower.NPCGeometry
             }
             codes.InsertRange(breatheTarget, breatheInjection);
 
-            /* Inject the patch for custom emote height. */
+            /* The emote height code. */
             var heightInjection = new List<CodeInstruction>(){
                 new(OpCodes.Ldarg_0),
                 new(OpCodes.Ldstr, Prefix + "/EmoteHeight"),
@@ -260,6 +257,12 @@ namespace ichortower.NPCGeometry
         }
 
 
+        /*
+         * The Game1.DrawCharacterEmotes transpiler patches the other place
+         * where the game handles drawing emote bubbles (this one is used
+         * during events, and the NPC.draw one is disabled).
+         * The code is mostly the same, but the math is slightly different.
+         */
         public static IEnumerable<CodeInstruction> Game1_DrawCharacterEmotes__Transpiler(
                 IEnumerable<CodeInstruction> instructions,
                 ILGenerator generator,
@@ -291,6 +294,7 @@ namespace ichortower.NPCGeometry
                 new(OpCodes.Dup),
                 new(OpCodes.Ldind_R4),
                 new(OpCodes.Ldloc, emoteHeight),
+                /* this +4 was also done by a wizard. it's magic */
                 new(OpCodes.Ldc_I4_S, (SByte)4),
                 new(OpCodes.Add),
                 new(OpCodes.Ldc_I4_S, (SByte)4),
@@ -310,7 +314,6 @@ namespace ichortower.NPCGeometry
             for (int i = 4; i < codes.Count; ++i) {
                 if (codes[i].opcode == OpCodes.Ldc_R4 &&
                         codes[i].operand.Equals(140f)) {
-                    MONITOR.Log($"found anchor at {i}", LogLevel.Info);
                     heightTarget = i-4;
                     foreach (var l in codes[heightTarget].labels) {
                         heightInjection[0].labels.Add(l);
@@ -323,7 +326,6 @@ namespace ichortower.NPCGeometry
             /* the subsequent ldsfld is where to skip to if found */
             for (int i = heightTarget+4; i < codes.Count; ++i) {
                 if (codes[i].opcode == OpCodes.Ldsfld) {
-                    MONITOR.Log($"exit at {i}", LogLevel.Info);
                     codes[i].labels.Add(foundHeightField);
                     break;
                 }
@@ -333,6 +335,9 @@ namespace ichortower.NPCGeometry
         }
 
 
+        /*
+         * Not currently provided. See README.
+         *
         public static void NPC_reloadSprite__Postfix(NPC __instance)
         {
             var data = __instance.GetData();
@@ -346,5 +351,6 @@ namespace ichortower.NPCGeometry
                 }
             }
         }
+        */
     }
 }
