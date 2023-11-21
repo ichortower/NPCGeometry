@@ -9,6 +9,19 @@ This is useful if you're like me and you made a custom NPC who is an adult but
 is very short; the base game uses heuristics based on age and gender to
 calculate positions, and they don't work out.
 
+## Important Considerations
+
+This mod **will have some of its functionality crippled by SpaceCore**, a
+widely-used dependency mod. This mod uses Harmony transpilers to patch the game
+code; two important segments of code go into the method `NPC.draw`.
+
+SpaceCore applies a Harmony prefix patch to `NPC.draw` which prevents all
+subsequent prefixes and all transpilers from executing. I have no control over
+this and cannot work around it without breaking SpaceCore in turn.
+
+If you also use SpaceCore in 1.6, `BreatheRect` will not work at all and
+`EmoteHeight` will not work in normal gameplay (event emotes may still work).
+
 ## How To Use
 
 This mod doesn't have any visible effect on its own: it injects code into a few
@@ -25,7 +38,7 @@ the NPC's age and gender. With this mod installed, these routines will try to
 read from the character's `CustomFields` dictionary, and use values there if
 they are found.
 
-## BreatheRect
+### BreatheRect
 
 To set a custom breathing rectangle, set the custom field
 `ichortower.NPCGeometry/BreatheRect` to a slash-delimited string containing
@@ -39,7 +52,7 @@ These values are pixels in the spritesheet frame (big 4x pixels, not screen
 pixels) and are relative to the top-left corner of the frame, which is usually
 16x32.  The X and Y values are indexes, so "0/0" is the top-left-most pixel.
 
-## EmoteHeight
+### EmoteHeight
 
 To change the rendering position of emote bubbles (both in events and in normal
 gameplay), set the custom field `ichortower.NPCGeometry/EmoteHeight` to an
@@ -57,7 +70,7 @@ appear at the same height in both situations: it is intended to look like the
 bottom pixel of the emote starts at the offset in the field (when counting from
 the bottom of the NPC's sprite frame).
 
-## ShadowScale
+### ShadowScale
 
 To change the scale of the shadow the NPC casts, set the custom field
 `ichortower.NPCGeometry/ShadowScale` to a floating-point value.
@@ -69,7 +82,7 @@ To change the scale of the shadow the NPC casts, set the custom field
 This is used as an additional scale multiplier when drawing the NPC's shadow,
 so 1.0 is normal size, 0.5 is half, 2.0 is double, etc.
 
-## Scale (future? not implemented)
+### Scale (future? not implemented)
 
 In the future, it may be possible to change the scale at which an NPC is
 rendered. I have left it out of this mod so far because simply setting the
