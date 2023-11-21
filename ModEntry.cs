@@ -81,30 +81,27 @@ namespace ichortower.NPCGeometry
          * into C#.
          */
         public static bool TryParseBreatheRect(string val,
-                ref Microsoft.Xna.Framework.Rectangle rect)
+                ref Microsoft.Xna.Framework.Rectangle chestBox,
+                ref Microsoft.Xna.Framework.Vector2 chestPosition)
         {
             string[] split = val.Split("/");
             int x, y, width, height;
             if (split.Length < 4) {
                 return false;
             }
-            if (!int.TryParse(split[0], out x)) {
-                return false;
+            if (int.TryParse(split[0], out x) &&
+                    int.TryParse(split[1], out y) &&
+                    int.TryParse(split[2], out width) &&
+                    int.TryParse(split[3], out height)) {
+                chestBox.X += x;
+                chestBox.Y += y;
+                chestBox.Width = width;
+                chestBox.Height = height;
+                /* do not ask me where 19 comes from. a wizard did it */
+                chestPosition = new Vector2(x+(width/2), y-19+(height/2)) * 4f;
+                return true;
             }
-            if (!int.TryParse(split[1], out y)) {
-                return false;
-            }
-            if (!int.TryParse(split[2], out width)) {
-                return false;
-            }
-            if (!int.TryParse(split[3], out height)) {
-                return false;
-            }
-            rect.X = x;
-            rect.Y = y;
-            rect.Width = width;
-            rect.Height = height;
-            return true;
+            return false;
         }
 
         public static IEnumerable<CodeInstruction> Character_DrawShadow__Transpiler(
@@ -173,22 +170,59 @@ namespace ichortower.NPCGeometry
         {
             LocalBuilder emoteHeight = generator.DeclareLocal(typeof(int));
             LocalBuilder emoteStringVal = generator.DeclareLocal(typeof(string));
+            LocalBuilder breatheStringVal = generator.DeclareLocal(typeof(string));
             Label noHeightField = generator.DefineLabel();
             Label foundHeightField = generator.DefineLabel();
-            //Label noBreatheRectField = generator.DefineLabel();
-            //Label foundBreatheRectField = generator.DefineLabel();
+            Label noBreatheRectField = generator.DefineLabel();
+            Label foundBreatheRectField = generator.DefineLabel();
             var codes = new List<CodeInstruction>(instructions);
 
-            /* TODO: breathe rect here */
+            /*
+             * Inject the patch for custom breathe rect.
+             * Find the store to local 5 (chestBox) as our anchor.
+             */
+            var breatheInjection = new List<CodeInstruction>(){
+                new(OpCodes.Ldarg_0),
+                new(OpCodes.Ldstr, Prefix + "/BreatheRect"),
+                new(OpCodes.Call, typeof(ModEntry).GetMethod("GetCustomFieldValue",
+                        BindingFlags.Public | BindingFlags.Static)),
+                new(OpCodes.Stloc, breatheStringVal),
+                new(OpCodes.Ldloc, breatheStringVal),
+                new(OpCodes.Brfalse, noBreatheRectField),
+                new(OpCodes.Ldloc, breatheStringVal),
+                new(OpCodes.Ldloca_S, (short)5),
+                new(OpCodes.Ldloca_S, (short)6),
+                new(OpCodes.Call, typeof(ModEntry).GetMethod("TryParseBreatheRect",
+                        BindingFlags.Public | BindingFlags.Static)),
+                new(OpCodes.Brfalse, noBreatheRectField),
+                new(OpCodes.Br, foundBreatheRectField),
+            };
+            int breatheTarget = -1;
+            for (int i = 0; i < codes.Count - 1; ++i) {
+                if (codes[i].opcode == OpCodes.Stloc_S &&
+                        (codes[i].operand as LocalBuilder).LocalIndex == 5) {
+                    MONITOR.Log($"breathe at {i}", LogLevel.Info);
+                    breatheTarget = i+1;
+                    codes[breatheTarget].labels.Add(noBreatheRectField);
+                    break;
+                }
+            }
+            for (int i = breatheTarget+1; i < codes.Count; ++i) {
+                if (codes[i].opcode == OpCodes.Ldc_R4 &&
+                        codes[i].operand.Equals(0.0f)) {
+                    MONITOR.Log($"endpoint at {i}", LogLevel.Info);
+                    codes[i].labels.Add(foundBreatheRectField);
+                    break;
+                }
+            }
+            codes.InsertRange(breatheTarget, breatheInjection);
 
             /*
              * Inject the patch for custom emote height.
              * We want to start right after loading the constant 32 near the
              * end.
              */
-            int heightTarget = -1;
             var heightInjection = new List<CodeInstruction>(){
-                //new(OpCodes.Shl),
                 new(OpCodes.Ldarg_0),
                 new(OpCodes.Ldstr, Prefix + "/EmoteHeight"),
                 new(OpCodes.Call, typeof(ModEntry).GetMethod("GetCustomFieldValue",
@@ -207,11 +241,13 @@ namespace ichortower.NPCGeometry
                 new(OpCodes.Sub),
                 new(OpCodes.Br_S, foundHeightField),
             };
+            int heightTarget = -1;
             for (int i = codes.Count - 5; i >= 0; --i) {
-                if (codes[i].opcode == OpCodes.Ldc_I4_S && codes[i].operand.Equals((SByte)32)) {
+                if (codes[i].opcode == OpCodes.Ldc_I4_S &&
+                        codes[i].operand.Equals((SByte)32)) {
                     heightTarget = i+1;
-                    codes[i+1].labels.Add(noHeightField);
-                    codes[i+4].labels.Add(foundHeightField);
+                    codes[heightTarget].labels.Add(noHeightField);
+                    codes[heightTarget+3].labels.Add(foundHeightField);
                     break;
                 }
             }
