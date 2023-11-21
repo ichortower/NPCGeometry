@@ -24,12 +24,6 @@ namespace ichortower.NPCGeometry
             ModEntry.HELPER = helper;
             var harmony = new Harmony(this.ModManifest.UniqueID);
             harmony.Patch(
-                original: typeof(NPC).GetMethod("reloadSprite",
-                    BindingFlags.Instance | BindingFlags.Public),
-                postfix: new HarmonyMethod(typeof(ModEntry),
-                    "NPC_reloadSprite__Postfix")
-            );
-            harmony.Patch(
                 original: typeof(Character).GetMethod("DrawShadow",
                     BindingFlags.Instance | BindingFlags.Public),
                 transpiler: new HarmonyMethod(typeof(ModEntry),
@@ -42,29 +36,23 @@ namespace ichortower.NPCGeometry
                 transpiler: new HarmonyMethod(typeof(ModEntry),
                     "NPC_draw__Transpiler")
             );
-            helper.ConsoleCommands.Add("pxpos", "\nDumps values of Position and getLocalPosition for named NPC.", this.pxpos);
+            harmony.Patch(
+                original: typeof(Game1).GetMethod("DrawCharacterEmotes",
+                    BindingFlags.Instance | BindingFlags.Public),
+                transpiler: new HarmonyMethod(typeof(ModEntry),
+                    "Game1_DrawCharacterEmotes__Transpiler")
+            );
         }
 
-        public void pxpos(string command, string[] args)
-        {
-            if (args.Length < 1) {
-                this.Monitor.Log($"Usage: pxpos <name>", LogLevel.Warn);
-                return;
-            }
-            NPC who = Game1.getCharacterFromName(args[0]);
-            if (who is null) {
-                this.Monitor.Log($"Couldn't find NPC called '{args[0]}'", LogLevel.Warn);
-                return;
-            }
-            Vector2 p = who.Position;
-            this.Monitor.Log($"{args[0]}.Position: ({p.X}, {p.Y})", LogLevel.Info);
-            Vector2 localp = who.getLocalPosition(Game1.viewport);
-            this.Monitor.Log($"{args[0]} getLocalPosition: ({localp.X}, {localp.Y})", LogLevel.Info);
-        }
 
         /*
-         * I couldn't get ldfld to work on CharacterData::CustomFields, so the
-         * custom field check got offloaded to C#.
+         * Helper function for the transpilers: gets a specific CustomField
+         * from CharacterData, or null if not available for various reasons.
+         *
+         * Loading and checking the CharacterData and CustomFields is a lot
+         * of instructions and null checks and LocalBuilders, and I have to do
+         * it repeatedly; plus I had problems with ldfld on the CharacterData
+         * object. So, this got farmed out to C#, where I just call it.
          */
         public static string GetCustomFieldValue(Character who, string key)
         {
@@ -77,36 +65,42 @@ namespace ichortower.NPCGeometry
         }
 
         /*
-         * Likewise, this helper function offloads a bunch of locals and so on
-         * into C#.
+         * Likewise, this helper function saves me a bunch of tedious CIL
+         * work. But it also handles saving the adjusted values into the
+         * target structs.
          */
         public static bool TryParseBreatheRect(string val,
-                ref Microsoft.Xna.Framework.Rectangle rect)
+                ref Microsoft.Xna.Framework.Rectangle chestBox,
+                ref Microsoft.Xna.Framework.Vector2 chestPosition)
         {
             string[] split = val.Split("/");
             int x, y, width, height;
             if (split.Length < 4) {
                 return false;
             }
-            if (!int.TryParse(split[0], out x)) {
-                return false;
+            if (int.TryParse(split[0], out x) &&
+                    int.TryParse(split[1], out y) &&
+                    int.TryParse(split[2], out width) &&
+                    int.TryParse(split[3], out height)) {
+                chestBox.X += x;
+                chestBox.Y += y;
+                chestBox.Width = width;
+                chestBox.Height = height;
+                /* do not ask me where 19 comes from. a wizard did it */
+                chestPosition = new Vector2(x+(width/2), y-19+(height/2)) * 4f;
+                return true;
             }
-            if (!int.TryParse(split[1], out y)) {
-                return false;
-            }
-            if (!int.TryParse(split[2], out width)) {
-                return false;
-            }
-            if (!int.TryParse(split[3], out height)) {
-                return false;
-            }
-            rect.X = x;
-            rect.Y = y;
-            rect.Width = width;
-            rect.Height = height;
-            return true;
+            return false;
         }
 
+
+        /*
+         * For DrawShadow, we want to add an extra multiplying factor to the
+         * scale parameter in the draw call.
+         * Read the factor from ShadowScale if it's available. Otherwise, use
+         * 1.0.
+         * Then, inject the extra ldloc/mul at the right spot.
+         */
         public static IEnumerable<CodeInstruction> Character_DrawShadow__Transpiler(
                 IEnumerable<CodeInstruction> instructions,
                 ILGenerator generator,
@@ -117,11 +111,7 @@ namespace ichortower.NPCGeometry
             Label startOfOriginalCode = generator.DefineLabel();
             var codes = new List<CodeInstruction>(instructions);
             codes[0].labels.Add(startOfOriginalCode);
-            /*
-             * first, use the ShadowScale custom field to set our float.
-             * it should end up as 1.0 if the field isn't found.
-             * this chunk goes before the rest of the function.
-             */
+            /* this is the CustomFields check. goes right at the start */
             var fieldChecker = new List<CodeInstruction>(){
                 new(OpCodes.Ldc_R4, 1.0f),
                 new(OpCodes.Stloc, shadowScale),
@@ -137,14 +127,18 @@ namespace ichortower.NPCGeometry
                 new(OpCodes.Call, typeof(System.Single).GetMethod("TryParse",
                         BindingFlags.Public | BindingFlags.Static,
                         new Type[]{typeof(string), typeof(float).MakeByRefType()})),
+                /* we don't actually care what TryParse returns, since right
+                 * after this instruction is startOfOriginalCode */
                 new(OpCodes.Pop),
             };
             codes.InsertRange(0, fieldChecker);
+
             /*
-             * now, we search for the setup for the draw call. we want to
-             * multiply the shadow's scale parameter by our float.
-             * this looks for the next callvirt after the 40f. may be safer
-             * if we check for the get_Value on the NetFloat?
+             * to find the injection point for the extra multiply, we are
+             * looking for the load of constant 40f, then finding the first
+             * callvirt after that.
+             * it's probably better to find the callvirt directly by checking
+             * the MethodInfo operand, but this is working so far.
              */
             int target = -1;
             bool forty = false;
@@ -166,6 +160,14 @@ namespace ichortower.NPCGeometry
         }
 
 
+        /*
+         * The NPC.draw transpiler adds two patches for two different geometry
+         * fields: EmoteHeight and BreatheRect.
+         * EmoteHeight replaces the emote bubble height calculation with a
+         * custom offset.
+         * BreatheRect picks a custom rectangle on the sprite to animate to
+         * show breathing, instead of calculating it with heuristics.
+         */
         public static IEnumerable<CodeInstruction> NPC_draw__Transpiler(
                 IEnumerable<CodeInstruction> instructions,
                 ILGenerator generator,
@@ -173,22 +175,54 @@ namespace ichortower.NPCGeometry
         {
             LocalBuilder emoteHeight = generator.DeclareLocal(typeof(int));
             LocalBuilder emoteStringVal = generator.DeclareLocal(typeof(string));
+            LocalBuilder breatheStringVal = generator.DeclareLocal(typeof(string));
             Label noHeightField = generator.DefineLabel();
             Label foundHeightField = generator.DefineLabel();
-            //Label noBreatheRectField = generator.DefineLabel();
-            //Label foundBreatheRectField = generator.DefineLabel();
+            Label noBreatheRectField = generator.DefineLabel();
+            Label foundBreatheRectField = generator.DefineLabel();
             var codes = new List<CodeInstruction>(instructions);
 
-            /* TODO: breathe rect here */
+            /* The breathe rect code.
+             * Most of the work is farmed out to the two helper functions. */
+            var breatheInjection = new List<CodeInstruction>(){
+                new(OpCodes.Ldarg_0),
+                new(OpCodes.Ldstr, Prefix + "/BreatheRect"),
+                new(OpCodes.Call, typeof(ModEntry).GetMethod("GetCustomFieldValue",
+                        BindingFlags.Public | BindingFlags.Static)),
+                new(OpCodes.Stloc, breatheStringVal),
+                new(OpCodes.Ldloc, breatheStringVal),
+                new(OpCodes.Brfalse, noBreatheRectField),
+                new(OpCodes.Ldloc, breatheStringVal),
+                new(OpCodes.Ldloca_S, (short)5),
+                new(OpCodes.Ldloca_S, (short)6),
+                new(OpCodes.Call, typeof(ModEntry).GetMethod("TryParseBreatheRect",
+                        BindingFlags.Public | BindingFlags.Static)),
+                new(OpCodes.Brfalse, noBreatheRectField),
+                new(OpCodes.Br, foundBreatheRectField),
+            };
+            /* the anchor for it is the store to local index 5 (chestBox) */
+            int breatheTarget = -1;
+            for (int i = 0; i < codes.Count - 1; ++i) {
+                if (codes[i].opcode == OpCodes.Stloc_S &&
+                        (codes[i].operand as LocalBuilder).LocalIndex == 5) {
+                    breatheTarget = i+1;
+                    codes[breatheTarget].labels.Add(noBreatheRectField);
+                    break;
+                }
+            }
+            /* find the instruction after the block, so we can skip the
+             * vanilla code if we found a valid BreatheRect field. */
+            for (int i = breatheTarget+1; i < codes.Count; ++i) {
+                if (codes[i].opcode == OpCodes.Ldc_R4 &&
+                        codes[i].operand.Equals(0.0f)) {
+                    codes[i].labels.Add(foundBreatheRectField);
+                    break;
+                }
+            }
+            codes.InsertRange(breatheTarget, breatheInjection);
 
-            /*
-             * Inject the patch for custom emote height.
-             * We want to start right after loading the constant 32 near the
-             * end.
-             */
-            int heightTarget = -1;
+            /* The emote height code. */
             var heightInjection = new List<CodeInstruction>(){
-                //new(OpCodes.Shl),
                 new(OpCodes.Ldarg_0),
                 new(OpCodes.Ldstr, Prefix + "/EmoteHeight"),
                 new(OpCodes.Call, typeof(ModEntry).GetMethod("GetCustomFieldValue",
@@ -207,11 +241,14 @@ namespace ichortower.NPCGeometry
                 new(OpCodes.Sub),
                 new(OpCodes.Br_S, foundHeightField),
             };
+            /* The anchor is loading the constant 32 near the end. */
+            int heightTarget = -1;
             for (int i = codes.Count - 5; i >= 0; --i) {
-                if (codes[i].opcode == OpCodes.Ldc_I4_S && codes[i].operand.Equals((SByte)32)) {
+                if (codes[i].opcode == OpCodes.Ldc_I4_S &&
+                        codes[i].operand.Equals((SByte)32)) {
                     heightTarget = i+1;
-                    codes[i+1].labels.Add(noHeightField);
-                    codes[i+4].labels.Add(foundHeightField);
+                    codes[heightTarget].labels.Add(noHeightField);
+                    codes[heightTarget+3].labels.Add(foundHeightField);
                     break;
                 }
             }
@@ -220,6 +257,87 @@ namespace ichortower.NPCGeometry
         }
 
 
+        /*
+         * The Game1.DrawCharacterEmotes transpiler patches the other place
+         * where the game handles drawing emote bubbles (this one is used
+         * during events, and the NPC.draw one is disabled).
+         * The code is mostly the same, but the math is slightly different.
+         */
+        public static IEnumerable<CodeInstruction> Game1_DrawCharacterEmotes__Transpiler(
+                IEnumerable<CodeInstruction> instructions,
+                ILGenerator generator,
+                MethodBase original)
+        {
+            LocalBuilder emoteHeight = generator.DeclareLocal(typeof(int));
+            LocalBuilder emoteStringVal = generator.DeclareLocal(typeof(string));
+            Label noHeightField = generator.DefineLabel();
+            Label foundHeightField = generator.DefineLabel();
+            var codes = new List<CodeInstruction>(instructions);
+
+            var heightInjection = new List<CodeInstruction>(){
+                new(OpCodes.Ldloc_2),
+                new(OpCodes.Ldstr, Prefix + "/EmoteHeight"),
+                new(OpCodes.Call, typeof(ModEntry).GetMethod("GetCustomFieldValue",
+                        BindingFlags.Public | BindingFlags.Static)),
+                new(OpCodes.Stloc, emoteStringVal),
+                new(OpCodes.Ldloc, emoteStringVal),
+                new(OpCodes.Brfalse, noHeightField),
+                new(OpCodes.Ldloc, emoteStringVal),
+                new(OpCodes.Ldloca, emoteHeight),
+                new(OpCodes.Call, typeof(System.Int32).GetMethod("TryParse",
+                        BindingFlags.Public | BindingFlags.Static,
+                        new Type[]{typeof(string), typeof(int).MakeByRefType()})),
+                new(OpCodes.Brfalse, noHeightField),
+                new(OpCodes.Ldloca_S, (SByte)3),
+                new(OpCodes.Ldflda, typeof(Vector2).GetField("Y",
+                        BindingFlags.Public | BindingFlags.Instance)),
+                new(OpCodes.Dup),
+                new(OpCodes.Ldind_R4),
+                new(OpCodes.Ldloc, emoteHeight),
+                /* this +4 was also done by a wizard. it's magic */
+                new(OpCodes.Ldc_I4_S, (SByte)4),
+                new(OpCodes.Add),
+                new(OpCodes.Ldc_I4_S, (SByte)4),
+                new(OpCodes.Mul),
+                new(OpCodes.Sub),
+                new(OpCodes.Stind_R4),
+                new(OpCodes.Br_S, foundHeightField),
+            };
+
+            /*
+             * the anchor is loading the constant 140.
+             * At the actual insertion point, we have to move the labels from
+             * the existing instruction, because the NeedsBirdieEmoteHack check
+             * branches to the same spot and would otherwise skip our code.
+             */
+            int heightTarget = -1;
+            for (int i = 4; i < codes.Count; ++i) {
+                if (codes[i].opcode == OpCodes.Ldc_R4 &&
+                        codes[i].operand.Equals(140f)) {
+                    heightTarget = i-4;
+                    foreach (var l in codes[heightTarget].labels) {
+                        heightInjection[0].labels.Add(l);
+                    }
+                    codes[heightTarget].labels.Clear();
+                    codes[heightTarget].labels.Add(noHeightField);
+                    break;
+                }
+            }
+            /* the subsequent ldsfld is where to skip to if found */
+            for (int i = heightTarget+4; i < codes.Count; ++i) {
+                if (codes[i].opcode == OpCodes.Ldsfld) {
+                    codes[i].labels.Add(foundHeightField);
+                    break;
+                }
+            }
+            codes.InsertRange(heightTarget, heightInjection);
+            return codes;
+        }
+
+
+        /*
+         * Not currently provided. See README.
+         *
         public static void NPC_reloadSprite__Postfix(NPC __instance)
         {
             var data = __instance.GetData();
@@ -233,5 +351,6 @@ namespace ichortower.NPCGeometry
                 }
             }
         }
+        */
     }
 }

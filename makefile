@@ -6,6 +6,7 @@ install: smapi
 
 smapi:
 	dotnet build
+	install -m 644 LICENSE "${MOD_DIR}"
 
 clean:
 	rm -rf bin obj
