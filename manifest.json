@@ -6,6 +6,6 @@
 	"UniqueID": "ichortower.NPCGeometry",
 	"EntryDll": "NPCGeometry.dll",
 	"MinimumApiVersion": "4.0.0-alpha",
-	"UpdateKeys": ["Nexus:-1", "GitHub:ichortower/NPCGeometry"],
+	"UpdateKeys": ["Nexus:19259", "GitHub:ichortower/NPCGeometry"],
 	"Dependencies": []
 }
