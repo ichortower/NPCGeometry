@@ -5,9 +5,10 @@ A mod for Stardew Valley 1.6+.
 Allows several hardcoded NPC metrics to be overridden by custom data fields in
 the `Data/Characters` asset.
 
-This is useful if you're like me and you made a custom NPC who is an adult but
-is very short; the base game uses heuristics based on age and gender to
-calculate positions, and they don't work out.
+This is useful if you're like me and you made [a custom
+NPC](https://github.com/ichortower/HatMouseLacey) who is an adult but is very
+short; the base game uses heuristics based on age and gender to calculate
+positions, and they don't work out.
 
 ## Important Considerations
 
