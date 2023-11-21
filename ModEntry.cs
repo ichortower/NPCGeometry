@@ -42,29 +42,23 @@ namespace ichortower.NPCGeometry
                 transpiler: new HarmonyMethod(typeof(ModEntry),
                     "NPC_draw__Transpiler")
             );
-            helper.ConsoleCommands.Add("pxpos", "\nDumps values of Position and getLocalPosition for named NPC.", this.pxpos);
+            harmony.Patch(
+                original: typeof(Game1).GetMethod("DrawCharacterEmotes",
+                    BindingFlags.Instance | BindingFlags.Public),
+                transpiler: new HarmonyMethod(typeof(ModEntry),
+                    "Game1_DrawCharacterEmotes__Transpiler")
+            );
         }
 
-        public void pxpos(string command, string[] args)
-        {
-            if (args.Length < 1) {
-                this.Monitor.Log($"Usage: pxpos <name>", LogLevel.Warn);
-                return;
-            }
-            NPC who = Game1.getCharacterFromName(args[0]);
-            if (who is null) {
-                this.Monitor.Log($"Couldn't find NPC called '{args[0]}'", LogLevel.Warn);
-                return;
-            }
-            Vector2 p = who.Position;
-            this.Monitor.Log($"{args[0]}.Position: ({p.X}, {p.Y})", LogLevel.Info);
-            Vector2 localp = who.getLocalPosition(Game1.viewport);
-            this.Monitor.Log($"{args[0]} getLocalPosition: ({localp.X}, {localp.Y})", LogLevel.Info);
-        }
 
         /*
-         * I couldn't get ldfld to work on CharacterData::CustomFields, so the
-         * custom field check got offloaded to C#.
+         * Helper function for the transpilers: gets a specific CustomField
+         * from CharacterData, or null if not available for various reasons.
+         *
+         * Loading and checking the CharacterData and CustomFields is a lot
+         * of instructions and null checks and LocalBuilders, and I have to do
+         * it repeatedly; plus I had problems with ldfld on the CharacterData
+         * object. So, this got farmed out to C#, where I just call it.
          */
         public static string GetCustomFieldValue(Character who, string key)
         {
@@ -77,8 +71,8 @@ namespace ichortower.NPCGeometry
         }
 
         /*
-         * Likewise, this helper function offloads a bunch of locals and so on
-         * into C#.
+         * Likewise, having this helper function in C# offloads a bunch of
+         * locals and calls and tedious stuff to the compiler.
          */
         public static bool TryParseBreatheRect(string val,
                 ref Microsoft.Xna.Framework.Rectangle chestBox,
@@ -104,6 +98,18 @@ namespace ichortower.NPCGeometry
             return false;
         }
 
+        public static void StaticLog(string str)
+        {
+            MONITOR.Log(str, LogLevel.Info);
+        }
+
+        /*
+         * For DrawShadow, we want to add an extra multiplying factor to the
+         * scale parameter in the draw call.
+         * Read the factor from ShadowScale if it's available. Otherwise, use
+         * 1.0.
+         * Then, inject the extra ldloc/mul at the right spot.
+         */
         public static IEnumerable<CodeInstruction> Character_DrawShadow__Transpiler(
                 IEnumerable<CodeInstruction> instructions,
                 ILGenerator generator,
@@ -114,11 +120,7 @@ namespace ichortower.NPCGeometry
             Label startOfOriginalCode = generator.DefineLabel();
             var codes = new List<CodeInstruction>(instructions);
             codes[0].labels.Add(startOfOriginalCode);
-            /*
-             * first, use the ShadowScale custom field to set our float.
-             * it should end up as 1.0 if the field isn't found.
-             * this chunk goes before the rest of the function.
-             */
+            /* this is the CustomFields check. goes right at the start */
             var fieldChecker = new List<CodeInstruction>(){
                 new(OpCodes.Ldc_R4, 1.0f),
                 new(OpCodes.Stloc, shadowScale),
@@ -134,15 +136,17 @@ namespace ichortower.NPCGeometry
                 new(OpCodes.Call, typeof(System.Single).GetMethod("TryParse",
                         BindingFlags.Public | BindingFlags.Static,
                         new Type[]{typeof(string), typeof(float).MakeByRefType()})),
+                /* we don't actually care what TryParse returns, since right
+                 * after this instruction is startOfOriginalCode */
                 new(OpCodes.Pop),
             };
             codes.InsertRange(0, fieldChecker);
-            /*
-             * now, we search for the setup for the draw call. we want to
-             * multiply the shadow's scale parameter by our float.
-             * this looks for the next callvirt after the 40f. may be safer
-             * if we check for the get_Value on the NetFloat?
-             */
+
+            /* to find the injection point for the extra multiply, we are
+             * looking for the load of constant 40f, then finding the first
+             * callvirt after that.
+             * FIXME probably better to find the callvirt directly by checking
+             * the MethodInfo operand */
             int target = -1;
             bool forty = false;
             for (int i = 0; i < codes.Count - 1; ++i) {
@@ -163,6 +167,10 @@ namespace ichortower.NPCGeometry
         }
 
 
+        /*
+         * The NPC.draw transpiler adds two patches for two different geometry
+         * fields: EmoteHeight and BreatheRect.
+         */
         public static IEnumerable<CodeInstruction> NPC_draw__Transpiler(
                 IEnumerable<CodeInstruction> instructions,
                 ILGenerator generator,
@@ -177,10 +185,8 @@ namespace ichortower.NPCGeometry
             Label foundBreatheRectField = generator.DefineLabel();
             var codes = new List<CodeInstruction>(instructions);
 
-            /*
-             * Inject the patch for custom breathe rect.
-             * Find the store to local 5 (chestBox) as our anchor.
-             */
+            /* Inject the patch for custom breathe rect.
+             * Most of the work is farmed out to the two helper functions. */
             var breatheInjection = new List<CodeInstruction>(){
                 new(OpCodes.Ldarg_0),
                 new(OpCodes.Ldstr, Prefix + "/BreatheRect"),
@@ -197,31 +203,28 @@ namespace ichortower.NPCGeometry
                 new(OpCodes.Brfalse, noBreatheRectField),
                 new(OpCodes.Br, foundBreatheRectField),
             };
+            /* the anchor for it is the store to local index 5 (chestBox) */
             int breatheTarget = -1;
             for (int i = 0; i < codes.Count - 1; ++i) {
                 if (codes[i].opcode == OpCodes.Stloc_S &&
                         (codes[i].operand as LocalBuilder).LocalIndex == 5) {
-                    MONITOR.Log($"breathe at {i}", LogLevel.Info);
                     breatheTarget = i+1;
                     codes[breatheTarget].labels.Add(noBreatheRectField);
                     break;
                 }
             }
+            /* find the instruction after the block, so we can skip the
+             * vanilla code if we found a valid BreatheRect field. */
             for (int i = breatheTarget+1; i < codes.Count; ++i) {
                 if (codes[i].opcode == OpCodes.Ldc_R4 &&
                         codes[i].operand.Equals(0.0f)) {
-                    MONITOR.Log($"endpoint at {i}", LogLevel.Info);
                     codes[i].labels.Add(foundBreatheRectField);
                     break;
                 }
             }
             codes.InsertRange(breatheTarget, breatheInjection);
 
-            /*
-             * Inject the patch for custom emote height.
-             * We want to start right after loading the constant 32 near the
-             * end.
-             */
+            /* Inject the patch for custom emote height. */
             var heightInjection = new List<CodeInstruction>(){
                 new(OpCodes.Ldarg_0),
                 new(OpCodes.Ldstr, Prefix + "/EmoteHeight"),
@@ -241,6 +244,7 @@ namespace ichortower.NPCGeometry
                 new(OpCodes.Sub),
                 new(OpCodes.Br_S, foundHeightField),
             };
+            /* The anchor is loading the constant 32 near the end. */
             int heightTarget = -1;
             for (int i = codes.Count - 5; i >= 0; --i) {
                 if (codes[i].opcode == OpCodes.Ldc_I4_S &&
@@ -248,6 +252,79 @@ namespace ichortower.NPCGeometry
                     heightTarget = i+1;
                     codes[heightTarget].labels.Add(noHeightField);
                     codes[heightTarget+3].labels.Add(foundHeightField);
+                    break;
+                }
+            }
+            codes.InsertRange(heightTarget, heightInjection);
+            return codes;
+        }
+
+
+        public static IEnumerable<CodeInstruction> Game1_DrawCharacterEmotes__Transpiler(
+                IEnumerable<CodeInstruction> instructions,
+                ILGenerator generator,
+                MethodBase original)
+        {
+            LocalBuilder emoteHeight = generator.DeclareLocal(typeof(int));
+            LocalBuilder emoteStringVal = generator.DeclareLocal(typeof(string));
+            Label noHeightField = generator.DefineLabel();
+            Label foundHeightField = generator.DefineLabel();
+            var codes = new List<CodeInstruction>(instructions);
+
+            var heightInjection = new List<CodeInstruction>(){
+                new(OpCodes.Ldloc_2),
+                new(OpCodes.Ldstr, Prefix + "/EmoteHeight"),
+                new(OpCodes.Call, typeof(ModEntry).GetMethod("GetCustomFieldValue",
+                        BindingFlags.Public | BindingFlags.Static)),
+                new(OpCodes.Stloc, emoteStringVal),
+                new(OpCodes.Ldloc, emoteStringVal),
+                new(OpCodes.Brfalse, noHeightField),
+                new(OpCodes.Ldloc, emoteStringVal),
+                new(OpCodes.Ldloca, emoteHeight),
+                new(OpCodes.Call, typeof(System.Int32).GetMethod("TryParse",
+                        BindingFlags.Public | BindingFlags.Static,
+                        new Type[]{typeof(string), typeof(int).MakeByRefType()})),
+                new(OpCodes.Brfalse, noHeightField),
+                new(OpCodes.Ldloca_S, (SByte)3),
+                new(OpCodes.Ldflda, typeof(Vector2).GetField("Y",
+                        BindingFlags.Public | BindingFlags.Instance)),
+                new(OpCodes.Dup),
+                new(OpCodes.Ldind_R4),
+                new(OpCodes.Ldloc, emoteHeight),
+                new(OpCodes.Ldc_I4_S, (SByte)4),
+                new(OpCodes.Add),
+                new(OpCodes.Ldc_I4_S, (SByte)4),
+                new(OpCodes.Mul),
+                new(OpCodes.Sub),
+                new(OpCodes.Stind_R4),
+                new(OpCodes.Br_S, foundHeightField),
+            };
+
+            /*
+             * the anchor is loading the constant 140.
+             * At the actual insertion point, we have to move the labels from
+             * the existing instruction, because the NeedsBirdieEmoteHack check
+             * branches to the same spot and would otherwise skip our code.
+             */
+            int heightTarget = -1;
+            for (int i = 4; i < codes.Count; ++i) {
+                if (codes[i].opcode == OpCodes.Ldc_R4 &&
+                        codes[i].operand.Equals(140f)) {
+                    MONITOR.Log($"found anchor at {i}", LogLevel.Info);
+                    heightTarget = i-4;
+                    foreach (var l in codes[heightTarget].labels) {
+                        heightInjection[0].labels.Add(l);
+                    }
+                    codes[heightTarget].labels.Clear();
+                    codes[heightTarget].labels.Add(noHeightField);
+                    break;
+                }
+            }
+            /* the subsequent ldsfld is where to skip to if found */
+            for (int i = heightTarget+4; i < codes.Count; ++i) {
+                if (codes[i].opcode == OpCodes.Ldsfld) {
+                    MONITOR.Log($"exit at {i}", LogLevel.Info);
+                    codes[i].labels.Add(foundHeightField);
                     break;
                 }
             }
