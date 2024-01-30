@@ -168,8 +168,8 @@ namespace ichortower.NPCGeometry
 
 
         /*
-	 * For NPC.DrawEmote, EmoteHeight replaces the emote bubble height
-	 * calculation with a custom offset.
+         * For NPC.DrawEmote, EmoteHeight replaces the emote bubble height
+         * calculation with a custom offset.
          */
         public static IEnumerable<CodeInstruction> NPC_DrawEmote__Transpiler(
                 IEnumerable<CodeInstruction> instructions,
@@ -218,11 +218,11 @@ namespace ichortower.NPCGeometry
         }
 
 
-	/*
-	 * In NPC.DrawBreathing, BreatheRect picks a custom rectangle on the
-	 * sprite to animate to show breathing, instead of calculating it with
-	 * heuristics.
-	 */
+        /*
+         * In NPC.DrawBreathing, BreatheRect sets a custom rectangle on the
+         * sprite to animate to show breathing, instead of calculating it with
+         * heuristics.
+         */
         public static IEnumerable<CodeInstruction> NPC_DrawBreathing__Transpiler(
                 IEnumerable<CodeInstruction> instructions,
                 ILGenerator generator,
@@ -234,7 +234,7 @@ namespace ichortower.NPCGeometry
             var codes = new List<CodeInstruction>(instructions);
 
             /* The breathe rect code (see the helper functions).
-	     * Note: 0 and 1 are local indexes for chestBox and chestPosition */
+             * Note: 0 and 1 are local indexes for chestBox and chestPosition */
             var breatheInjection = new List<CodeInstruction>(){
                 new(OpCodes.Ldarg_0),
                 new(OpCodes.Ldstr, Prefix + "/BreatheRect"),
@@ -252,7 +252,7 @@ namespace ichortower.NPCGeometry
                 new(OpCodes.Br, foundBreatheRectField),
             };
             /* inject right after initial setting (chestBox = SourceRect).
-	     * that means stloc.0 */
+             * that means stloc.0 */
             int breatheTarget = -1;
             for (int i = 0; i < codes.Count - 1; ++i) {
                 if (codes[i].opcode == OpCodes.Stloc_0) {
@@ -261,8 +261,8 @@ namespace ichortower.NPCGeometry
                     break;
                 }
             }
-	    /* add a label at the 'float breathScale =' line so we can skip
-	     * to it if we found a valid BreatheRect. we need ldc.r4 0.0 */
+            /* add a label at the 'float breathScale =' line so we can skip
+             * to it if we found a valid BreatheRect. we need ldc.r4 0.0 */
             for (int i = breatheTarget+1; i < codes.Count; ++i) {
                 if (codes[i].opcode == OpCodes.Ldc_R4 &&
                         codes[i].operand.Equals(0.0f)) {
@@ -272,8 +272,8 @@ namespace ichortower.NPCGeometry
             }
             codes.InsertRange(breatheTarget, breatheInjection);
 
-	    return codes;
-	}
+            return codes;
+        }
 
 
         /*
