@@ -17,20 +17,11 @@ introduced this change:
 
     - Split `NPC.draw` into smaller methods.
 
-For older alpha builds, use the 1.0.0-alpha release.
-
-This mod **will have some of its functionality crippled by SpaceCore**, a
-widely-used dependency mod. This mod uses Harmony transpilers to patch the game
-code; two important targeted subroutines (`NPC.DrawEmote` and
-`NPC.DrawBreathing`) are called by the method `NPC.draw`.
-
-SpaceCore applies a Harmony prefix patch to `NPC.draw` which replaces the body
-of that method and prevents the calls to those subroutines; this means my
-patches have no effect. I have no control over this and cannot work around it
-without breaking SpaceCore in turn.
-
-If you also use SpaceCore in 1.6, `BreatheRect` will not work at all and
-`EmoteHeight` will not work in normal gameplay (event emotes will still work).
+Until fairly recently, this mod was not compatible with alpha builds of
+SpaceCore, a widely-used dependency mod. I addressed this problem by sending a
+PR to that mod's repository,
+[which was merged](https://github.com/spacechase0/StardewValleyMods/pull/384).
+Current builds should be fully compatible.
 
 ## How To Use
 
